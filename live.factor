@@ -1,9 +1,9 @@
-USING: kernel locals math.matrices math.transforms.fft threads
+USING: kernel locals channels math.matrices math.transforms.fft threads
 ui.gadgets.charts ui.gadgets.charts.lines ui.gadgets.charts.axes ;
 
 IN: ui.gadgets.charts.live
 
-TUPLE: live-chart < chart updater { paused initial: f } fft-plot ;
+TUPLE: live-chart < chart { paused initial: f } ;
 SYMBOL: lines
 lines [ H{ } clone ] initialize
 SYMBOL: line-colors
@@ -19,6 +19,9 @@ line-colors [ H{
         } ] initialize
 
 M: live-chart ungraft* t >>paused drop ;
+
+: <default-min-axes> ( -- seq )
+    ${ ${ -0.1 0.1 } { -0.1 0.1 } } ;
 
 : calculated-axis-limits ( x y -- x-y-limits )
     [ [ infimum ] [ supremum ] bi 2array ] bi@ 2array ; 
@@ -42,26 +45,24 @@ M: live-chart ungraft* t >>paused drop ;
         [ gadget swap >>axes relayout-1 t ] } 1&& drop
     ] [ 2drop ] if ;
 
-: (update-axes) ( axes x-y-limits -- new-axes )
+: (calculate-axes) ( axes x-y-limits -- new-axes )
     2array stitch [ first ] [ second ] bi calculated-axis-limits ;
 
-:: update-axes ( axes xy -- new-axes/? )
+:: calculate-new-axes ( axes xy -- new-axes/? )
     xy curve-axes
     2dup curve-axes-long-enough?
     [
         calculated-axis-limits
         dup valid-axis-limits?
-        [ axes swap (update-axes) ] when
+        [ axes swap (calculate-axes) ] when
     ] [ 2drop f ] if ;
 
+: get-children-axes ( gadget -- seq/? )
+    children>> [ line? ] filter
+    dup length 0 = not [ [ rest ] [ first data>> curve-axes 2dup curve-axes-long-enough? [ calculated-axis-limits ] [ 2drop <default-min-axes> ] if ] bi [ data>> calculate-new-axes ] reduce ] [ drop f ] if ;
+
 :: update-children-axes ( gadget -- )
-    gadget children>>
-    [
-        dup line?
-        [
-            gadget axes>> swap data>> update-axes [ gadget swap >>axes drop ] when*
-        ] [ drop ] if
-    ] each ;
+    gadget get-children-axes [ gadget axes<< ] [ <default-min-axes> gadget axes<< ] if* ;
 
 :: create-line ( idx gadget -- line )
     line new idx line-colors get at >>color V{ } clone >>data
@@ -70,68 +71,28 @@ M: live-chart ungraft* t >>paused drop ;
 :: get-or-create-line ( idx gadget -- line )
     idx lines get at [ idx gadget create-line ] unless* ;
 
-:: plot-rest-against-first ( gadget row -- )
+: limit-vector ( seq n -- newseq )
+    index-or-length tail* V{ } like ;
+
+:: plot-rest-against-first ( row gadget -- )
     row <enumerated>
     [ rest ]
     [ first ] bi
     [
         swap
         [ [ second ] bi@ 2array ]
-        [ first gadget get-or-create-line data>> ] bi 
-        push
+        [ first gadget get-or-create-line [ data>> push ] [ dup data>> 500 limit-vector >>data drop ] bi ] bi 
     ] curry each ;
 
-:: plot-fft ( gadget row -- )
-    row
-    <enumerated>
-    [ rest ]
-    [ first ] bi
-    [
-        swap
-        [ first gadget get-or-create-line data>> curve-axes nip fft [ abs ] map ]
-        [ first row length + gadget get-or-create-line swap <enumerated> [ [ 0.1 * ] map ] map >>data drop ] bi 
-        drop
-    ] curry each ; 
+: plot-columns ( row x-col y-col gadget -- )
+    [ 2array swap [ nth ] curry map ]
+    [ 0 swap get-or-create-line data>> push ] bi* ;
 
-:: plot-custom ( gadget row -- )
-    gadget children>>
-    [
-        dup line?
-        [
-            [ data>> row swap [ [ second ] [ fourth ] bi 2array ] dip push ]
-            [ gadget swap data>> update-axis ]
-            [ relayout-1 ] tri ! TODO limit amount of redrawing
-        ] [ drop ] if
-    ] each ;
-
-:: charting-loop ( gadget -- )
-    [ gadget paused>> ]
-    [
-        gadget updater>> call( -- x/? )
-        [
-            gadget swap plot-custom
-            ! gadget swap plot-rest-against-first gadget [ update-children-axes ] [ relayout-1 ] bi
-            ! gadget swap [ plot-rest-against-first ] [ plot-fft ] 2bi gadget [ update-children-axes ] [ relayout-1 ] bi
-            yield
-        ] when*
-    ] until ;
-
-:: start-chart-thread ( gadget -- )
-    [
-        "file" get
-        [ utf8 [ gadget charting-loop ] with-file-reader ]
-        [ drop gadget charting-loop ]
-        if*
-    ] in-thread
-    ;
-
-: (live-chart) ( quot -- gadget )
-    live-chart new ${ ${ -0.1 0.1 } { -0.1 0.1 } } >>axes swap >>updater
-    line new 0 line-colors get at >>color V{ } clone >>data add-gadget
+: <live-chart> ( -- gadget )
+    live-chart new <default-min-axes> >>axes
     vertical-axis new text-color >>color add-gadget
     horizontal-axis new text-color >>color add-gadget
     white-interior
-    live-chart new ${ ${ -0.1 0.1 } { -0.1 0.1 } } >>axes >>fft-plot
     ;
 
 ! don't know why this happens if input stream doesn't get data for a bit
@@ -139,12 +100,35 @@ M: live-chart ungraft* t >>paused drop ;
 
 : inactive-delay ( -- ) 15 milliseconds sleep ;
 
-: csv-live-demo ( -- gadget )
+! : (csv-data-read) ( -- quot( -- seq ) )
+: (csv-data-read) ( -- quot )
     [ read-row dup valid-csv-input?
         [ [ string>number ] map ] [ drop inactive-delay f ] if
-    ] (live-chart) 
-    [ start-chart-thread ] keep ;
+    ] ; 
+
+: <file-or-stdin-stream> ( -- stream )
+    "file" get [ utf8 <file-reader> ] [ input-stream get ] if* ;
+
+! : start-data-read-thread ( stream quot( seq -- seq ) channel -- )
+: start-data-read-thread ( quot channel flag -- )
+    '[ <file-or-stdin-stream> [ [ _ call( -- seq/? ) [ _ to _ raise-flag ] when* t ] loop ] with-input-stream ] in-thread ;
+
+! : start-data-update-thread ( channel quot( seq -- ) -- )
+: start-data-update-thread ( channel quot -- )
+    '[ [ yield _ from ] [ _ call( seq -- ) ] while* ] in-thread ;
+
+:: start-data-display-thread ( flag gadget -- )
+    [ [ flag [ wait-for-flag ] [ lower-flag ] bi gadget paused>> ] [ gadget [ update-children-axes ] [ relayout-1 ] bi 16 milliseconds sleep ] until ] in-thread ;
+
+:: csv-plotter ( -- gadget )
+    <channel> <live-chart> <flag> :> ( ch g f )
+    (csv-data-read) ch f start-data-read-thread ! controller
+    ch [ g plot-rest-against-first ] start-data-update-thread ! model
+    ! ch [ 1 3 g plot-columns ] start-data-update-thread ! model
+    f g start-data-display-thread ! view
+    g
+    ;
 
 MAIN-WINDOW: live-chart-window { { title "live-chart" } }
-    csv-live-demo >>gadgets ;
+    csv-plotter >>gadgets ;
 
