@@ -1,7 +1,9 @@
-USING: kernel locals math.matrices threads ui.gadgets.charts ui.gadgets.charts.lines ui.gadgets.charts.axes ;
+USING: kernel locals math.matrices math.transforms.fft threads
+ui.gadgets.charts ui.gadgets.charts.lines ui.gadgets.charts.axes ;
+
 IN: ui.gadgets.charts.live
 
-TUPLE: live-chart < chart updater { paused initial: f } ;
+TUPLE: live-chart < chart updater { paused initial: f } fft-plot ;
 SYMBOL: lines
 lines [ H{ } clone ] initialize
 SYMBOL: line-colors
@@ -11,6 +13,9 @@ line-colors [ H{
             { 2 $ heading-color }
             { 3 $ object-color }
             { 4 $ popup-color }
+            { 5 $ retain-stack-color }
+            { 6 $ string-color }
+            { 7 $ output-color }
         } ] initialize
 
 M: live-chart ungraft* t >>paused drop ;
@@ -69,7 +74,6 @@ M: live-chart ungraft* t >>paused drop ;
     row <enumerated>
     [ rest ]
     [ first ] bi
-
     [
         swap
         [ [ second ] bi@ 2array ]
@@ -77,28 +81,47 @@ M: live-chart ungraft* t >>paused drop ;
         push
     ] curry each ;
 
+:: plot-fft ( gadget row -- )
+    row
+    <enumerated>
+    [ rest ]
+    [ first ] bi
+    [
+        swap
+        [ first gadget get-or-create-line data>> curve-axes nip fft [ abs ] map ]
+        [ first row length + gadget get-or-create-line swap <enumerated> [ [ 0.1 * ] map ] map >>data drop ] bi 
+        drop
+    ] curry each ; 
+
 :: plot-custom ( gadget row -- )
     gadget children>>
     [
         dup line?
         [
-            [ data>> row swap [ [ fourth ] [ second ] bi 2array ] dip push ]
+            [ data>> row swap [ [ second ] [ fourth ] bi 2array ] dip push ]
             [ gadget swap data>> update-axis ]
             [ relayout-1 ] tri ! TODO limit amount of redrawing
         ] [ drop ] if
     ] each ;
 
+:: charting-loop ( gadget -- )
+    [ gadget paused>> ]
+    [
+        gadget updater>> call( -- x/? )
+        [
+            gadget swap plot-custom
+            ! gadget swap plot-rest-against-first gadget [ update-children-axes ] [ relayout-1 ] bi
+            ! gadget swap [ plot-rest-against-first ] [ plot-fft ] 2bi gadget [ update-children-axes ] [ relayout-1 ] bi
+            yield
+        ] when*
+    ] until ;
+
 :: start-chart-thread ( gadget -- )
     [
-        [ gadget paused>> ]
-        [
-            gadget updater>> call( -- x/? )
-            [
-                ! gadget swap plot-custom
-                gadget swap plot-rest-against-first gadget [ update-children-axes ] [ relayout-1 ] bi
-                yield
-            ] when*
-        ] until
+        "file" get
+        [ utf8 [ gadget charting-loop ] with-file-reader ]
+        [ drop gadget charting-loop ]
+        if*
     ] in-thread
     ;
 
@@ -107,7 +130,9 @@ M: live-chart ungraft* t >>paused drop ;
     line new 0 line-colors get at >>color V{ } clone >>data add-gadget
     vertical-axis new text-color >>color add-gadget
     horizontal-axis new text-color >>color add-gadget
-    white-interior ;
+    white-interior
+    live-chart new ${ ${ -0.1 0.1 } { -0.1 0.1 } } >>axes >>fft-plot
+    ;
 
 ! don't know why this happens if input stream doesn't get data for a bit
 : valid-csv-input? ( seq -- ? ) { "" } = not ;
@@ -115,7 +140,7 @@ M: live-chart ungraft* t >>paused drop ;
 : inactive-delay ( -- ) 15 milliseconds sleep ;
 
 : csv-live-demo ( -- gadget )
-    [ B read-row dup valid-csv-input?
+    [ read-row dup valid-csv-input?
         [ [ string>number ] map ] [ drop inactive-delay f ] if
     ] (live-chart) 
     [ start-chart-thread ] keep ;
