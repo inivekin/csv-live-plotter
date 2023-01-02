@@ -4,6 +4,7 @@ ui.gadgets.charts ui.gadgets.charts.lines ui.gadgets.charts.axes ;
 IN: ui.gadgets.charts.live
 
 TUPLE: live-chart < chart { paused initial: f } ;
+TUPLE: live-line < line { sample-limit initial: 500 } ;
 SYMBOL: lines
 lines [ H{ } clone ] initialize
 SYMBOL: line-colors
@@ -65,7 +66,7 @@ M: live-chart ungraft* t >>paused drop ;
     gadget get-children-axes [ gadget axes<< ] [ <default-min-axes> gadget axes<< ] if* ;
 
 :: create-line ( idx gadget -- line )
-    line new idx line-colors get at >>color V{ } clone >>data
+    live-line new idx line-colors get at >>color V{ } clone >>data
     [ gadget swap add-gadget drop ] [ [ idx lines get set-at ] keep ] bi ;
 
 :: get-or-create-line ( idx gadget -- line )
@@ -74,6 +75,9 @@ M: live-chart ungraft* t >>paused drop ;
 : limit-vector ( seq n -- newseq )
     index-or-length tail* V{ } like ;
 
+: update-live-line ( el gadget -- )
+    get-or-create-line [ data>> push ] [ dup [ data>> ] [ sample-limit>> ] bi limit-vector >>data drop ] bi ; inline
+
 :: plot-rest-against-first ( row gadget -- )
     row <enumerated>
     [ rest ]
@@ -81,12 +85,12 @@ M: live-chart ungraft* t >>paused drop ;
     [
         swap
         [ [ second ] bi@ 2array ]
-        [ first gadget get-or-create-line [ data>> push ] [ dup data>> 500 limit-vector >>data drop ] bi ] bi 
+        [ first gadget update-live-line ] bi 
     ] curry each ;
 
 : plot-columns ( row x-col y-col gadget -- )
     [ 2array swap [ nth ] curry map ]
-    [ 0 swap get-or-create-line data>> push ] bi* ;
+    [ 0 swap update-live-line ] bi* ;
 
 : <live-chart> ( -- gadget )
     live-chart new <default-min-axes> >>axes
@@ -111,14 +115,20 @@ M: live-chart ungraft* t >>paused drop ;
 
 ! : start-data-read-thread ( stream quot( seq -- seq ) channel -- )
 : start-data-read-thread ( quot channel flag -- )
-    '[ <file-or-stdin-stream> [ [ _ call( -- seq/? ) [ _ to _ raise-flag ] when* t ] loop ] with-input-stream ] in-thread ;
+    '[ <file-or-stdin-stream>
+        [ [ _ call( -- seq/? ) [ _ to _ raise-flag ] when* t ] loop ] with-input-stream
+    ] in-thread ;
 
 ! : start-data-update-thread ( channel quot( seq -- ) -- )
 : start-data-update-thread ( channel quot -- )
-    '[ [ yield _ from ] [ _ call( seq -- ) ] while* ] in-thread ;
+    '[ [ _ from ] [ _ call( seq -- ) ] while* ] in-thread ;
 
 :: start-data-display-thread ( flag gadget -- )
-    [ [ flag [ wait-for-flag ] [ lower-flag ] bi gadget paused>> ] [ gadget [ update-children-axes ] [ relayout-1 ] bi 16 milliseconds sleep ] until ] in-thread ;
+    [
+        [ flag [ wait-for-flag ] [ lower-flag ] bi gadget paused>> ]
+        [ gadget [ update-children-axes ] [ relayout-1 ] bi 16 milliseconds sleep ]
+        until
+    ] in-thread ;
 
 :: csv-plotter ( -- gadget )
     <channel> <live-chart> <flag> :> ( ch g f )
