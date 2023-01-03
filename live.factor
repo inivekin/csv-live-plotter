@@ -3,10 +3,8 @@ ui.gadgets.charts ui.gadgets.charts.lines ui.gadgets.charts.axes ;
 
 IN: ui.gadgets.charts.live
 
-TUPLE: live-chart < chart { paused initial: f } ;
+TUPLE: live-chart < chart { paused initial: f } lines axes-label-models ;
 TUPLE: live-line < line { sample-limit initial: 500 } ;
-SYMBOL: lines
-lines [ H{ } clone ] initialize
 SYMBOL: line-colors
 line-colors [ H{
             { 0 $ link-color }
@@ -62,38 +60,50 @@ M: live-chart ungraft* t >>paused drop ;
     children>> [ line? ] filter
     dup length 0 = not [ [ rest ] [ first data>> curve-axes 2dup curve-axes-long-enough? [ calculated-axis-limits ] [ 2drop <default-min-axes> ] if ] bi [ data>> calculate-new-axes ] reduce ] [ drop f ] if ;
 
+:: label-placements ( seq -- seq' )
+    seq first2 :> ( x y )
+    0 y 2 / 2array
+    x 0.95 * y 2 / 2array
+    x 2 / y 0.95 * 2array
+    x 2 / 0 2array
+    4array ;
+
 :: update-children-axes ( gadget -- )
-    gadget get-children-axes [ gadget axes<< ] [ <default-min-axes> gadget axes<< ] if* ;
+    gadget get-children-axes [ gadget axes<< ] [ <default-min-axes> gadget axes<< ] if*
+    gadget [ axes>> concat ] [ axes-label-models>> ] bi zip [ first2 [ number>string ] [ model>> ] bi* set-model ] each
+    ! TODO(kevinc) replace with draw-gadget* generic
+    gadget [ chart-dim label-placements ] [ axes-label-models>> ] bi zip [ first2 loc<< ] each ;
 
 :: create-line ( idx gadget -- line )
     live-line new idx line-colors get at >>color V{ } clone >>data
-    [ gadget swap add-gadget drop ] [ [ idx lines get set-at ] keep ] bi ;
+    [ gadget swap add-gadget drop ] [ [ idx gadget lines>> set-at ] keep ] bi ;
 
 :: get-or-create-line ( idx gadget -- line )
-    idx lines get at [ idx gadget create-line ] unless* ;
+    idx gadget lines>> at [ idx gadget create-line ] unless* ;
 
 : limit-vector ( seq n -- newseq )
     index-or-length tail* V{ } like ;
 
-: update-live-line ( el gadget -- )
+: update-live-line ( el idx gadget -- )
     get-or-create-line [ data>> push ] [ dup [ data>> ] [ sample-limit>> ] bi limit-vector >>data drop ] bi ; inline
 
-:: plot-rest-against-first ( row gadget -- )
+:: plot-columns ( row x-col y-cols gadget -- )
     row <enumerated>
-    [ rest ]
-    [ first ] bi
+    [ y-cols [ [ first y-cols in? ] filter ] [ x-col swap remove-nth ] if ]
+    [ x-col swap nth ] bi
     [
         swap
         [ [ second ] bi@ 2array ]
         [ first gadget update-live-line ] bi 
     ] curry each ;
 
-: plot-columns ( row x-col y-col gadget -- )
-    [ 2array swap [ nth ] curry map ]
-    [ 0 swap update-live-line ] bi* ;
+:: add-axis-labels ( gadget axes -- gadget )
+    axes concat
+    [ <model> [ number>string ] <arrow> <label-control> ] map [ [ gadget swap add-gadget drop ] each ] [ gadget axes-label-models<< ] bi 
+    gadget ;
 
 : <live-chart> ( -- gadget )
-    live-chart new <default-min-axes> >>axes
+    live-chart new <default-min-axes> [ >>axes ] [ add-axis-labels ] bi H{ } clone >>lines
     vertical-axis new text-color >>color add-gadget
     horizontal-axis new text-color >>color add-gadget
     white-interior
@@ -104,22 +114,19 @@ M: live-chart ungraft* t >>paused drop ;
 
 : inactive-delay ( -- ) 15 milliseconds sleep ;
 
-! : (csv-data-read) ( -- quot( -- seq ) )
 : (csv-data-read) ( -- quot )
     [ read-row dup valid-csv-input?
         [ [ string>number ] map ] [ drop inactive-delay f ] if
     ] ; 
 
-: <file-or-stdin-stream> ( -- stream )
-    "file" get [ utf8 <file-reader> ] [ input-stream get ] if* ;
+: <file-or-stdin-stream> ( filepath/? -- stream )
+    [ utf8 <file-reader> ] [ input-stream get ] if* ;
 
-! : start-data-read-thread ( stream quot( seq -- seq ) channel -- )
-: start-data-read-thread ( quot channel flag -- )
-    '[ <file-or-stdin-stream>
+: start-data-read-thread ( filepath/? quot channel flag -- )
+    '[ _ <file-or-stdin-stream>
         [ [ _ call( -- seq/? ) [ _ to _ raise-flag ] when* t ] loop ] with-input-stream
     ] in-thread ;
 
-! : start-data-update-thread ( channel quot( seq -- ) -- )
 : start-data-update-thread ( channel quot -- )
     '[ [ _ from ] [ _ call( seq -- ) ] while* ] in-thread ;
 
@@ -130,15 +137,17 @@ M: live-chart ungraft* t >>paused drop ;
         until
     ] in-thread ;
 
-:: csv-plotter ( -- gadget )
+:: csv-plotter ( filepath/? x-column y-columns -- gadget )
     <channel> <live-chart> <flag> :> ( ch g f )
-    (csv-data-read) ch f start-data-read-thread ! controller
-    ch [ g plot-rest-against-first ] start-data-update-thread ! model
-    ! ch [ 1 3 g plot-columns ] start-data-update-thread ! model
+    filepath/? (csv-data-read) ch f start-data-read-thread ! controller
+    ch [ x-column y-columns g plot-columns ] start-data-update-thread ! model
     f g start-data-display-thread ! view
     g
     ;
 
 MAIN-WINDOW: live-chart-window { { title "live-chart" } }
+    "file" get
+    "x" get [ string>number ] [ 0 ] if*
+    "y" get [ "," split [ string>number ] map ] [ f ] if*
     csv-plotter >>gadgets ;
 
