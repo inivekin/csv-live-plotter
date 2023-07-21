@@ -5,7 +5,7 @@ QUALIFIED-WITH: models.range mr
 IN: ui.gadgets.charts.live
 
 TUPLE: live-chart-window < frame chart ;
-TUPLE: live-chart < chart { paused initial: f } axes-limits axes-scaling lines series-metadata axes-label-models ;
+TUPLE: live-chart < chart { paused initial: f } axes-limits axes-scaling lines series-metadata ;
 TUPLE: live-axis-observer quot ;
 M: live-axis-observer model-changed
     [ value>> ] dip quot>> call( value -- ) ;
@@ -22,9 +22,17 @@ M: live-cursor-vertical-axis draw-gadget*
         axis center>> value>>
         [
             second
-            lline parent>> dim>> second swap
-            lline parent>> axes-limits>> value>> second first2
+            lline parent>> dim>> second
+
+            swap
+            lline parent>> axes-limits>> value>> second first2 swap
             scale
+
+            ! do another scaling level on the dims for the zoom
+            lline parent>> dim>> second lline parent>> axes-scaling>> second second * -
+            lline parent>> axes-scaling>> second first /
+            lline parent>> dim>> second swap -
+
             [ 0 swap 2array ] [ lline parent>> dim>> first swap 2array ] bi 2array draw-line
         ] when*
     ] [ 2drop ] if ;
@@ -34,9 +42,16 @@ M: live-cursor-horizontal-axis draw-gadget*
         axis center>> value>>
         [
             first
-            lline parent>> dim>> first swap
+            lline parent>> dim>> first
+
+            swap
             lline parent>> axes-limits>> value>> first first2 swap
             scale
+
+            ! do another scaling level on the dims for the zoom
+            lline parent>> dim>> first lline parent>> axes-scaling>> first second * -
+            lline parent>> axes-scaling>> first first /
+
             [ 0 2array ] [ lline parent>> dim>> second 2array ] bi 2array draw-line
         ] when*
     ] [ 2drop ] if ;
@@ -188,9 +203,7 @@ M: live-chart ungraft* t >>paused drop ;
     ] [ f ] if ;
 
 :: update-all-axes ( gadget -- )
-    ! gadget get-children-axes [ gadget axes-limits>> set-model ] [ <default-min-axes> gadget axes-limits>> set-model ] if*
     gadget update-children-axes [ gadget axes-limits>> set-model ] [ <default-min-axes> gadget axes-limits>> set-model ] if*
-    ! NOT NEEDED? gadget [ axes>> concat ] [ axes-label-models>> ] bi zip [ first2 [ number>string ] [ model>> ] bi* set-model ] each
     ;
 
 : limit-vector ( seq n -- newseq )
@@ -209,12 +222,6 @@ M: live-chart ungraft* t >>paused drop ;
         [ first gadget update-live-line ] bi 
     ] curry each ;
 
-:: add-axis-labels ( gadget axes -- gadget )
-    axes concat
-    [ <model> [ number>string ] <arrow> <label-control> ] map
-    [ [ gadget swap add-gadget drop ] each ] [ gadget axes-label-models<< ] bi 
-    gadget ;
-
 :: multiply-axis ( limits scaling -- scaled-limits )
     limits first2 swap -
     scaling first *
@@ -229,8 +236,8 @@ M: live-chart ungraft* t >>paused drop ;
     dup [ axes-limits>> value>> ] [ axes-scaling>> ] bi zip [ [ first ] [ second ] bi multiply-axis ] map >>axes ;
 
 :: <live-chart> ( -- window-gadget )
-    3 2 <frame>
-    live-chart new <default-min-axes> [ >>axes ] [ add-axis-labels ] bi H{ } clone >>lines { { 1.0 0 } { 1.0 0 } } >>axes-scaling :> lchart
+    3 3 <frame> white-interior
+    live-chart new <default-min-axes> >>axes H{ } clone >>lines { { 1.0 0 } { 1.0 0 } } >>axes-scaling :> lchart
     lchart
     <default-min-axes> <model> [ >>axes-limits ] [ over [ set-chart-axes 2drop ] curry live-axis-observer boa swap add-connection ] bi
     vertical-axis new text-color >>color add-gadget
@@ -260,6 +267,8 @@ M: live-chart ungraft* t >>paused drop ;
     { 0 1 } grid-add
 
     <pile> "pause" [ drop lchart com-pause ] <button> white-interior add-gadget { 2 1 } grid-add
+
+    lchart axes-limits>> [ first2 [ first2 ] bi@ "g_xmin: %.3f g_xmax: %.3f g_ymin: %.3f g_ymax: %.3f" sprintf ] <arrow> <label-control> white-interior { 0 2 } grid-add
 
     live-series-info new vertical >>orientation
     white-interior
