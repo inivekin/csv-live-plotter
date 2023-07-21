@@ -19,46 +19,40 @@ TUPLE: live-cursor-horizontal-axis < axis center ;
 
 M: live-cursor-vertical-axis draw-gadget*
     dup parent>> dup live-line? [| axis lline |
-        axis center>> dup
+        axis center>> value>>
         [
             second
             lline parent>> dim>> second swap
             lline parent>> axes-limits>> value>> second first2
             scale
             [ 0 swap 2array ] [ lline parent>> dim>> first swap 2array ] bi 2array draw-line
-        ]
-        [
-            drop
-        ] if
+        ] when*
     ] [ 2drop ] if ;
 
 M: live-cursor-horizontal-axis draw-gadget*
     dup parent>> dup live-line? [| axis lline |
-        axis center>> dup
+        axis center>> value>>
         [
             first
             lline parent>> dim>> first swap
             lline parent>> axes-limits>> value>> first first2 swap
             scale
             [ 0 2array ] [ lline parent>> dim>> second 2array ] bi 2array draw-line
-        ]
-        [
-            drop
-        ] if
+        ] when*
     ] [ 2drop ] if ;
     
 
-SYMBOL: line-colors
-line-colors [ H{
-            { 0 $ link-color }
-            { 1 $ title-color }
-            { 2 $ heading-color }
-            { 3 $ object-color }
-            { 4 $ popup-color }
-            { 5 $ retain-stack-color }
-            { 6 $ string-color }
-            { 7 $ output-color }
-        } ] initialize
+INITIALIZED-SYMBOL: line-colors
+[ H{
+    { 0 $ link-color }
+    { 1 $ title-color }
+    { 2 $ heading-color }
+    { 3 $ object-color }
+    { 4 $ popup-color }
+    { 5 $ retain-stack-color }
+    { 6 $ string-color }
+    { 7 $ output-color }
+} ]
 
 M: live-chart ungraft* t >>paused drop ;
 
@@ -115,14 +109,11 @@ M: live-chart ungraft* t >>paused drop ;
 :: change-cursor ( ratio idx line -- )
     line parent>> dim>> :> dim
     line data>> [ length ratio * round >integer ] [ nth ] bi :> limits
-    line cursor-axes>> first2 [ limits >>center ] bi@
-    2drop
+    line cursor-axes>> first2 [ center>> limits swap set-model ] bi@
     ;
 
 :: <series-metadata> ( line idx -- gadget )
-    ! TODO(kevinc) series specific models/stuff added here
-
-    2 6 <frame>
+    2 8 <frame>
     "test" <label> white-interior { 2 2 } <filled-border> { 0 0 } grid-add
     ""  <label> white-interior { 1 0 } grid-add
     "ymin: " <label> white-interior { 0 1 } grid-add
@@ -138,13 +129,17 @@ M: live-chart ungraft* t >>paused drop ;
     0 0.01 0 1 0.01 mr:<range> [ [ idx line change-cursor ] range-observer boa swap add-connection ] keep
     horizontal <slider>
     { 1 5 } grid-add
+    "xcursor: " <label> white-interior { 0 6 } grid-add
+    line cursor-axes>> first center>> [ [ first "%.3f" sprintf ] [ "f" sprintf ] if* ] <arrow> <label-control> white-interior { 1 6 } grid-add
+    "ycursor: " <label> white-interior { 0 7 } grid-add
+    line cursor-axes>> first center>> [ [ second "%.3f" sprintf ] [ "f" sprintf ] if* ] <arrow> <label-control> white-interior { 1 7 } grid-add
 
     idx [ series-identifier ] [ line-colors get at ] bi <framed-labeled-gadget>
     ;
 
 :: add-cursor-axes-to-line ( line idx -- )
     live-cursor-vertical-axis new live-cursor-horizontal-axis new
-    [ idx line-colors get at >>color ] bi@
+    [ idx line-colors get at >>color f <model> >>center ] bi@
 
     [ line swap add-gadget swap add-gadget drop ]
     [ 2array line swap >>cursor-axes ]
@@ -156,7 +151,7 @@ M: live-chart ungraft* t >>paused drop ;
     live-line new idx line-colors get at >>color V{ } clone >>data
     [ gadget swap add-gadget drop ] [ [ idx gadget lines>> set-at ] keep ] bi
     <default-min-axes> <model> >>axes-limits
-    ! dup idx add-cursor-axes-to-line
+    dup idx add-cursor-axes-to-line
     ;
 
 :: get-or-create-line ( idx gadget -- line )
@@ -165,7 +160,6 @@ M: live-chart ungraft* t >>paused drop ;
         idx gadget create-line :> l
         gadget series-metadata>> l idx <series-metadata> add-gadget drop
         l
-        dup idx add-cursor-axes-to-line
     ] unless* ;
 
 ! best not to use the default in case the max and min of default is
