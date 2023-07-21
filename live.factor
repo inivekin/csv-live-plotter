@@ -1,7 +1,7 @@
 USING: kernel locals channels math.matrices math.transforms.fft threads
-ui.gadgets.charts ui.gadgets.labels ui.gadgets.packs ui.gadgets.charts.lines ui.gadgets.charts.axes ;
+ui.gadgets.charts ui.gadgets.labels ui.gadgets.packs ui.gadgets.charts.lines
+ui.gadgets.charts.axes ui.gadgets.charts.utils ;
 QUALIFIED-WITH: models.range mr
-
 IN: ui.gadgets.charts.live
 
 TUPLE: live-chart-window < frame chart ;
@@ -13,7 +13,41 @@ TUPLE: range-observer quot ;
 M: range-observer model-changed
     [ range-value ] dip quot>> call( value -- ) ;
 TUPLE: live-series-info < pack ;
-TUPLE: live-line < line { sample-limit initial: f } ;
+TUPLE: live-line < line { sample-limit initial: f } axes-limits cursor-axes ;
+TUPLE: live-cursor-vertical-axis < axis center ;
+TUPLE: live-cursor-horizontal-axis < axis center ;
+
+M: live-cursor-vertical-axis draw-gadget*
+    dup parent>> dup live-line? [| axis lline |
+        axis center>> dup
+        [
+            second
+            lline parent>> dim>> second swap
+            lline parent>> axes-limits>> value>> second first2
+            scale
+            [ 0 swap 2array ] [ lline parent>> dim>> first swap 2array ] bi 2array draw-line
+        ]
+        [
+            drop
+        ] if
+    ] [ 2drop ] if ;
+
+M: live-cursor-horizontal-axis draw-gadget*
+    dup parent>> dup live-line? [| axis lline |
+        axis center>> dup
+        [
+            first
+            lline parent>> dim>> first swap
+            lline parent>> axes-limits>> value>> first first2 swap
+            scale
+            [ 0 2array ] [ lline parent>> dim>> second 2array ] bi 2array draw-line
+        ]
+        [
+            drop
+        ] if
+    ] [ 2drop ] if ;
+    
+
 SYMBOL: line-colors
 line-colors [ H{
             { 0 $ link-color }
@@ -32,7 +66,7 @@ M: live-chart ungraft* t >>paused drop ;
     dup paused>> not >>paused drop ;
 
 : <default-min-axes> ( -- seq )
-    ${ ${ -0.1 0.1 } { -0.1 0.1 } } ;
+    { { -0.1 0.1 } { -0.1 0.1 } } ;
 
 : calculated-axis-limits ( x y -- x-y-limits )
     [ [ infimum ] [ supremum ] bi 2array ] bi@ 2array ; 
@@ -58,46 +92,112 @@ M: live-chart ungraft* t >>paused drop ;
         [ axes swap (calculate-axes) ] when
     ] [ 2drop f ] if ;
 
-: get-children-axes ( gadget -- seq/? )
-    lines>> values
-    dup length 0 = not
+:: mutate-new-axes ( lines xy -- )
+    xy curve-axes 
+    2dup curve-axes-long-enough?
     [
-        [ rest ]
-        [ first data>> curve-axes 2dup curve-axes-long-enough? [ calculated-axis-limits ] [ 2drop <default-min-axes> ] if
-    ] bi
-    [ data>> calculate-new-axes ] reduce ] [ drop f ] if ;
-
-:: label-placements ( seq -- seq' )
-    seq first2 :> ( x y )
-    0 y 2 / 2array
-    x 0.95 * y 2 / 2array
-    x 2 / y 0.95 * 2array
-    x 2 / 0 2array
-    4array ;
+        calculated-axis-limits
+        dup valid-axis-limits?
+        [
+            lines axes-limits>> set-model
+            f
+        ] when
+        drop
+    ]
+    [
+        2drop
+    ] if
+    ;
 
 : series-identifier ( idx -- str )
     number>string ;
 
-: <series-metadata> ( idx -- gadget )
-    ! TODO(kevinc) series specific models/stuff added here
-    "test" <label> white-interior { 2 2 } <filled-border> swap [ series-identifier ] [ line-colors get at ] bi <framed-labeled-gadget> ;
+:: change-cursor ( ratio idx line -- )
+    line parent>> dim>> :> dim
+    line data>> [ length ratio * round >integer ] [ nth ] bi :> limits
+    line cursor-axes>> first2 [ limits >>center ] bi@
+    2drop
+    ;
 
-:: update-children-axes ( gadget -- )
-    gadget get-children-axes [ gadget axes-limits>> set-model ] [ <default-min-axes> gadget axes-limits>> set-model ] if*
-    gadget [ axes>> concat ] [ axes-label-models>> ] bi zip [ first2 [ number>string ] [ model>> ] bi* set-model ] each
-    ! TODO(kevinc) replace with draw-gadget* generic
-    gadget [ chart-dim label-placements ] [ axes-label-models>> ] bi zip [ first2 loc<< ] each ;
+:: <series-metadata> ( line idx -- gadget )
+    ! TODO(kevinc) series specific models/stuff added here
+
+    2 6 <frame>
+    "test" <label> white-interior { 2 2 } <filled-border> { 0 0 } grid-add
+    ""  <label> white-interior { 1 0 } grid-add
+    "ymin: " <label> white-interior { 0 1 } grid-add
+    line axes-limits>> [ second first "%.3f" sprintf ] <arrow> <label-control> white-interior { 1 1 } grid-add
+    "ymax: " <label> white-interior { 0 2 } grid-add
+    line axes-limits>> [ second second "%.3f" sprintf ] <arrow> <label-control> white-interior { 1 2 } grid-add
+    "xmin: " <label> white-interior { 0 3 } grid-add
+    line axes-limits>> [ first first "%.3f" sprintf ] <arrow> <label-control> white-interior { 1 3 } grid-add
+    "xmax: " <label> white-interior { 0 4 } grid-add
+    line axes-limits>> [ first second "%.3f" sprintf ] <arrow> <label-control> white-interior { 1 4 } grid-add
+
+    "cursor: " <label> white-interior { 0 5 } grid-add
+    0 0.01 0 1 0.01 mr:<range> [ [ idx line change-cursor ] range-observer boa swap add-connection ] keep
+    horizontal <slider>
+    { 1 5 } grid-add
+
+    idx [ series-identifier ] [ line-colors get at ] bi <framed-labeled-gadget>
+    ;
+
+:: add-cursor-axes-to-line ( line idx -- )
+    live-cursor-vertical-axis new live-cursor-horizontal-axis new
+    [ idx line-colors get at >>color ] bi@
+
+    [ line swap add-gadget swap add-gadget drop ]
+    [ 2array line swap >>cursor-axes ]
+    2bi
+    drop
+    ;
 
 :: create-line ( idx gadget -- line )
     live-line new idx line-colors get at >>color V{ } clone >>data
-    [ gadget swap add-gadget drop ] [ [ idx gadget lines>> set-at ] keep ] bi ;
+    [ gadget swap add-gadget drop ] [ [ idx gadget lines>> set-at ] keep ] bi
+    <default-min-axes> <model> >>axes-limits
+    ! dup idx add-cursor-axes-to-line
+    ;
 
 :: get-or-create-line ( idx gadget -- line )
     idx gadget lines>> at
     [
-        idx gadget create-line
-        gadget series-metadata>> idx <series-metadata> add-gadget drop
+        idx gadget create-line :> l
+        gadget series-metadata>> l idx <series-metadata> add-gadget drop
+        l
+        dup idx add-cursor-axes-to-line
     ] unless* ;
+
+! best not to use the default in case the max and min of default is
+! somehow a larger range than the actual data
+: default-axes ( line-values -- axes )
+    first data>> curve-axes 2dup curve-axes-long-enough? 
+    [ calculated-axis-limits ] [ 2drop <default-min-axes> ] if
+    ;
+
+: get-children-axes ( gadget -- seq/? )
+    lines>> values
+    dup length 0 = not
+    [
+        [ rest ] [ default-axes ] bi
+        [ data>> calculate-new-axes ] reduce
+    ] [ drop f ] if ;
+
+
+:: update-children-axes ( gadget -- seq/? )
+    gadget lines>> unzip :> ( l v )
+    v length 0 = not
+    [
+        l v [ [ gadget get-or-create-line ] [ data>> ] bi* mutate-new-axes ] 2each
+        v [ rest ] [ default-axes ] bi
+        [ axes-limits>> value>> swap (calculate-axes) ] reduce
+    ] [ f ] if ;
+
+:: update-all-axes ( gadget -- )
+    ! gadget get-children-axes [ gadget axes-limits>> set-model ] [ <default-min-axes> gadget axes-limits>> set-model ] if*
+    gadget update-children-axes [ gadget axes-limits>> set-model ] [ <default-min-axes> gadget axes-limits>> set-model ] if*
+    ! NOT NEEDED? gadget [ axes>> concat ] [ axes-label-models>> ] bi zip [ first2 [ number>string ] [ model>> ] bi* set-model ] each
+    ;
 
 : limit-vector ( seq n -- newseq )
     index-or-length tail* V{ } like ;
@@ -117,7 +217,8 @@ M: live-chart ungraft* t >>paused drop ;
 
 :: add-axis-labels ( gadget axes -- gadget )
     axes concat
-    [ <model> [ number>string ] <arrow> <label-control> ] map [ [ gadget swap add-gadget drop ] each ] [ gadget axes-label-models<< ] bi 
+    [ <model> [ number>string ] <arrow> <label-control> ] map
+    [ [ gadget swap add-gadget drop ] each ] [ gadget axes-label-models<< ] bi 
     gadget ;
 
 :: multiply-axis ( limits scaling -- scaled-limits )
@@ -131,7 +232,6 @@ M: live-chart ungraft* t >>paused drop ;
     swap 2array ;
 
 : set-chart-axes ( chart -- chart )
-    ! dup [ axes-limits>> value>> dup ] [ axes-scaling>> ] bi m* m- >>axes ;
     dup [ axes-limits>> value>> ] [ axes-scaling>> ] bi zip [ [ first ] [ second ] bi multiply-axis ] map >>axes ;
 
 :: <live-chart> ( -- window-gadget )
@@ -183,6 +283,7 @@ M: live-chart ungraft* t >>paused drop ;
 : (csv-data-read) ( -- quot )
     [ read-row dup valid-csv-input?
         [ [ string>number ] map ] [ drop inactive-delay f ] if
+        f swap [ in? ] keep swap [ drop f ] when
     ] ; 
 
 : <file-or-stdin-stream> ( filepath/? -- stream )
@@ -199,7 +300,7 @@ M: live-chart ungraft* t >>paused drop ;
 :: start-data-display-thread ( flag gadget -- )
     [
         [ flag [ wait-for-flag ] [ lower-flag ] bi gadget paused>> ]
-        [ gadget [ update-children-axes ] [ relayout-1 ] bi 16 milliseconds sleep ]
+        [ gadget [ update-all-axes ] [ relayout-1 ] bi 16 milliseconds sleep ]
         until
     ] in-thread ;
 
