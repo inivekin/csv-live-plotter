@@ -1,11 +1,19 @@
-USING: kernel locals channels math.matrices math.transforms.fft threads
-ui.gadgets.charts ui.gadgets.labels ui.gadgets.packs ui.gadgets.charts.lines
-ui.gadgets.charts.axes ui.gadgets.charts.utils ;
+USING: accessors arrays assocs calendar channels columns
+concurrency.flags csv formatting io io.encodings.utf8 io.files
+io.streams.duplex kernel literals locals math math.functions
+math.matrices math.parser math.transforms.fft models
+models.arrow namespaces sequences sets splitting threads ui
+ui.gadgets ui.gadgets.borders ui.gadgets.buttons
+ui.gadgets.charts ui.gadgets.charts.axes ui.gadgets.charts.lines
+ui.gadgets.charts.utils ui.gadgets.frames ui.gadgets.grids
+ui.gadgets.labeled ui.gadgets.labels ui.gadgets.packs
+ui.gadgets.sliders ui.render ui.theme ui.tools.common ;
 QUALIFIED-WITH: models.range mr
+FROM: namespaces => set ;
 IN: ui.gadgets.charts.live
 
 TUPLE: live-chart-window < frame chart ;
-TUPLE: live-chart < chart { paused initial: f } axes-limits axes-scaling lines series-metadata ;
+TUPLE: live-chart < chart { paused initial: f } axes-limits axes-scaling { headers initial: f } lines series-metadata ;
 TUPLE: live-axis-observer quot ;
 M: live-axis-observer model-changed
     [ value>> ] dip quot>> call( value -- ) ;
@@ -13,7 +21,7 @@ TUPLE: range-observer quot ;
 M: range-observer model-changed
     [ range-value ] dip quot>> call( value -- ) ;
 TUPLE: live-series-info < pack ;
-TUPLE: live-line < line { sample-limit initial: f } axes-limits cursor-axes ;
+TUPLE: live-line < line { name initial: "unnamed" } { sample-limit initial: f } axes-limits cursor-axes ;
 TUPLE: live-cursor-vertical-axis < axis center ;
 TUPLE: live-cursor-horizontal-axis < axis center ;
 
@@ -56,7 +64,6 @@ M: live-cursor-horizontal-axis draw-gadget*
         ] when*
     ] [ 2drop ] if ;
     
-
 INITIALIZED-SYMBOL: line-colors
 [ H{
     { 0 $ link-color }
@@ -129,7 +136,7 @@ M: live-chart ungraft* t >>paused drop ;
 
 :: <series-metadata> ( line idx -- gadget )
     2 8 <frame>
-    "test" <label> white-interior { 2 2 } <filled-border> { 0 0 } grid-add
+    line name>> <label> white-interior { 2 2 } <filled-border> { 0 0 } grid-add
     ""  <label> white-interior { 1 0 } grid-add
     "ymin: " <label> white-interior { 0 1 } grid-add
     line axes-limits>> [ second first "%.3f" sprintf ] <arrow> <label-control> white-interior { 1 1 } grid-add
@@ -173,6 +180,7 @@ M: live-chart ungraft* t >>paused drop ;
     idx gadget lines>> at
     [
         idx gadget create-line :> l
+        gadget headers>> [ idx swap nth l swap >>name drop ] when*
         gadget series-metadata>> l idx <series-metadata> add-gadget drop
         l
     ] unless* ;
@@ -203,14 +211,20 @@ M: live-chart ungraft* t >>paused drop ;
     ] [ f ] if ;
 
 :: update-all-axes ( gadget -- )
-    gadget update-children-axes [ gadget axes-limits>> set-model ] [ <default-min-axes> gadget axes-limits>> set-model ] if*
+    gadget update-children-axes
+    [ gadget axes-limits>> set-model ]
+    [ <default-min-axes> gadget axes-limits>> set-model ]
+    if*
     ;
 
 : limit-vector ( seq n -- newseq )
     index-or-length tail* V{ } like ;
 
 : update-live-line ( el idx gadget -- )
-    get-or-create-line [ data>> push ] [ dup [ data>> ] [ sample-limit>> ] bi [ limit-vector ] when* >>data drop ] bi ; inline
+    get-or-create-line
+    [ data>> push ]
+    [ dup [ data>> ] [ sample-limit>> ] bi [ limit-vector ] when* >>data drop ]
+    bi ; inline
 
 :: plot-columns ( row x-col y-cols gadget -- )
     row <enumerated>
@@ -235,10 +249,10 @@ M: live-chart ungraft* t >>paused drop ;
 : set-chart-axes ( chart -- chart )
     dup [ axes-limits>> value>> ] [ axes-scaling>> ] bi zip [ [ first ] [ second ] bi multiply-axis ] map >>axes ;
 
-:: <live-chart> ( -- window-gadget )
+:: <live-chart> ( headers -- window-gadget )
     3 3 <frame> white-interior
     live-chart new <default-min-axes> >>axes H{ } clone >>lines { { 1.0 0 } { 1.0 0 } } >>axes-scaling :> lchart
-    lchart
+    lchart headers >>headers
     <default-min-axes> <model> [ >>axes-limits ] [ over [ set-chart-axes 2drop ] curry live-axis-observer boa swap add-connection ] bi
     vertical-axis new text-color >>color add-gadget
     horizontal-axis new text-color >>color add-gadget
@@ -294,7 +308,9 @@ M: live-chart ungraft* t >>paused drop ;
 
 : start-data-read-thread ( stream quot channel flag -- )
     '[ _
-        [ [ _ call( -- seq/? ) [ _ to _ raise-flag ] when* t ] loop ] with-input-stream
+        [
+            [ _ call( -- seq/? ) [ _ to _ raise-flag ] when* t ] loop
+        ] with-input-stream
     ] in-thread ;
 
 : start-data-update-thread ( channel quot -- )
@@ -311,7 +327,8 @@ M: live-chart ungraft* t >>paused drop ;
     children>> [ live-chart? ] filter ;
 
 :: csv-plotter ( stream x-column y-columns -- gadget )
-    <channel> <live-chart> <flag> :> ( ch g f )
+    stream [ io:readln "," split ] with-input-stream* :> headers
+    <channel> headers <live-chart> <flag> :> ( ch g f )
     stream (csv-data-read) ch f start-data-read-thread ! controller
     ch g frame-livecharts first '[ x-column y-columns _ plot-columns ] start-data-update-thread ! model
     f g frame-livecharts first start-data-display-thread ! view
