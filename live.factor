@@ -8,14 +8,15 @@ ui.gadgets.buttons ui.gadgets.charts ui.gadgets.charts.axes
 ui.gadgets.charts.lines ui.gadgets.charts.utils
 ui.gadgets.frames ui.gadgets.grids ui.gadgets.labeled
 ui.gadgets.labels ui.gadgets.packs ui.gadgets.scrollers
-ui.gadgets.sliders ui.gestures ui.pens.gradient ui.render
-ui.theme ui.theme.base16 ui.theme.switching ui.tools.common
-vectors ;
+ui.gadgets.sliders ui.gestures ui.pens.gradient  ui.pens.solid
+ui.render ui.theme ui.theme.base16 ui.theme.switching
+ui.tools.common vectors ;
 QUALIFIED-WITH: models.range mr
 FROM: namespaces => set ;
 IN: ui.gadgets.charts.live
 
 INITIALIZED-SYMBOL: sample-sequence [ f ]
+INITIALIZED-SYMBOL: sample-limit [ f ]
 
 ! TODO add interface for dynamic configuring sample-limit for streaming data
 ! TODO generate colours when above 7 limit
@@ -79,8 +80,8 @@ INITIALIZED-SYMBOL: line-colors
 
 M: live-chart ungraft* t >>paused drop ;
 
-: com-pause ( gadget -- )
-    dup paused>> not >>paused drop ;
+: com-pause ( button gadget -- )
+    dup paused>> not [ >>paused drop ] keep [ details-color <solid> >>interior drop ] [ content-background <solid> >>interior drop ] if ;
 
 : <default-min-axes> ( -- seq )
     { { -0.1 0.1 } { -0.1 0.1 } } ;
@@ -180,6 +181,7 @@ M: live-chart ungraft* t >>paused drop ;
 
 :: create-line ( idx gadget -- line )
     live-line new idx line-colors get at >>color V{ } clone >>data
+    sample-limit get >>sample-limit
     [ gadget swap add-gadget drop ] [ [ idx gadget lines>> set-at ] keep ] bi
     <default-min-axes> <model> >>axes-limits
     dup idx add-cursor-axes-to-line
@@ -259,7 +261,7 @@ M: live-chart ungraft* t >>paused drop ;
     [ dup [ axes-limits>> value>> ] [ axes-scaling>> ] bi zip [ [ first ] [ second ] bi multiply-axis ] map ] keep
     '[ _ axes-labels>> set-model ] [ >>axes ] bi ;
 
-:: <live-chart> ( headers -- window-gadget )
+:: <live-chart> ( headers flag -- window-gadget )
     2 2 <frame> white-interior
     live-chart new <default-min-axes> >>axes H{ } clone >>lines { { 1.0 0 } { 1.0 0 } } >>axes-scaling :> lchart
     lchart headers >>headers
@@ -270,7 +272,7 @@ M: live-chart ungraft* t >>paused drop ;
     white-interior
     { 0 0 } grid-add
 
-    <pile> "pause" [ drop lchart com-pause ] <roll-button> white-interior add-gadget { 1 1 } grid-add
+    <pile> "pause" [ lchart com-pause flag raise-flag ] <roll-button> white-interior add-gadget { 1 1 } grid-add
 
     lchart axes-labels>> [ first2 [ first2 ] bi@ "g_xmin: %.3f g_xmax: %.3f g_ymin: %.3f g_ymax: %.3f" sprintf ] <arrow> <label-control> { 0 1 } grid-add
 
@@ -285,11 +287,11 @@ M: live-chart ungraft* t >>paused drop ;
 ! don't know why this happens if input stream doesn't get data for a bit
 : valid-csv-input? ( seq -- ? ) { "" } = not ;
 
-: inactive-delay ( -- ) 15 milliseconds sleep ;
+: inactive-delay ( -- ) 16 milliseconds sleep ;
 
 : (csv-data-read) ( -- quot )
     [ read-row dup valid-csv-input?
-        [ [ string>number ] map ] [ drop inactive-delay f ] if
+        [ [ string>number ] map ] [ drop yield inactive-delay f ] if
         f swap [ in? ] keep swap [ drop f ] when
     ] ;
 
@@ -298,14 +300,14 @@ M: live-chart ungraft* t >>paused drop ;
 
 :: insert-by-key ( row x-key keys -- row' )
     1 row col keys zip
-    1 keys maximum 1 + <zero-matrix> first
+    1 keys [ maximum ] [ 1 row col length ] if* 1 + <zero-matrix> first
     [ '[ first2 _ set-nth ] each ] keep
     x-key [ [ [ row first first x-key ] dip set-nth ] keep ] when
     ;
 
 : (line-feeder) ( x-key y-keys rows -- quot )
     <reversed> >vector -rot
-    '[ _ pop _ _ insert-by-key [ f sleep-until ] unless* ] ;
+    '[ _ dup empty? [ drop f ] [ pop [ _ _ insert-by-key ] [ f sleep-until ] if* ] if ] ;
 
 : <file-or-stdin-stream> ( filepath/? -- stream )
     [ utf8 <file-reader> ] [ input-stream get ] if* ;
@@ -313,27 +315,27 @@ M: live-chart ungraft* t >>paused drop ;
 : start-stream-read-thread ( stream quot channel flag -- )
     '[ _
         [
-            [ _ call( -- seq/? ) [ _ to _ raise-flag ] when* t ] loop
+            [ _ call( -- seq/? ) [ _ to _ raise-flag ] when* yield t ] loop
         ] with-input-stream
     ] in-thread ;
 
 : start-data-read-thread ( quot channel flag -- )
     '[
-        [ _ call( -- seq/? ) [ _ to _ raise-flag ] when* t ] loop
+        [ _ call( -- seq/? ) [ _ to _ raise-flag ] [ 16 milliseconds sleep ] if* yield t ] loop
     ] in-thread ;
 
 : start-data-update-thread ( channel quot -- )
-    '[ [ _ from ] [ _ call( seq -- ) ] while* ] in-thread ;
+    '[ [ _ from ] [ _ call( seq -- ) ] while* f sleep-until ] in-thread ;
 
 :: start-data-display-thread ( flag gadget -- )
     [
-        [
-          [ flag [ wait-for-flag ] [ lower-flag ] bi gadget paused>> ]
-          [ gadget [ update-all-axes ] [ relayout-1 ] bi 16 milliseconds sleep ]
-          until
-          16 milliseconds sleep
-          t
-        ] loop
+      [
+        [ 16 milliseconds sleep gadget paused>> dup [ flag lower-flag ] when ]
+        [ gadget [ update-all-axes ] [ relayout-1 ] bi ]
+        until
+        yield
+        t
+      ] loop
     ] in-thread ;
 
 : frame-livecharts ( gadget -- seq )
@@ -341,7 +343,7 @@ M: live-chart ungraft* t >>paused drop ;
 
 ! dense matrix opposed to seq-plotter sparse matrix
 :: zoom-plotter ( lines x-column y-columns headers -- gadget )
-    <channel> headers <live-chart> <flag> :> ( ch g f )
+    <channel> headers <flag> [ <live-chart> ] keep :> ( ch g f )
     x-column g { 0 0 } grid-child xs<<
     y-columns g { 0 0 } grid-child ys<<
     x-column y-columns lines (line-feeder) ch f start-data-read-thread ! controller
@@ -351,7 +353,7 @@ M: live-chart ungraft* t >>paused drop ;
     ;
 
 :: seq-plotter ( rows x-column y-columns headers -- gadget )
-    <channel> headers <live-chart> <flag> :> ( ch g f )
+    <channel> headers <flag> [ <live-chart> ] keep :> ( ch g f )
     x-column g { 0 0 } grid-child xs<<
     y-columns g { 0 0 } grid-child ys<<
     rows (data-feeder) ch f start-data-read-thread ! controller
@@ -362,7 +364,7 @@ M: live-chart ungraft* t >>paused drop ;
 
 :: csv-plotter ( stream x-column y-columns -- gadget )
     stream [ io:readln "," split ] with-input-stream* :> headers
-    <channel> headers <live-chart> <flag> :> ( ch g f )
+    <channel> headers <flag> [ <live-chart> ] keep :> ( ch g f )
     x-column g { 0 0 } grid-child xs<<
     y-columns g { 0 0 } grid-child ys<<
     stream (csv-data-read) ch f start-stream-read-thread ! controller
@@ -379,13 +381,18 @@ MAIN-WINDOW: live-chart-window { { title "live-chart" } }
     "file" get <file-or-stdin-stream>
     "x" get [ string>number ] [ f ] if*
     "y" get [ "," split [ string>number ] map ] [ f ] if*
-    csv-plotter >>gadgets ;
+    "l" get [ string>number ] [ f ] if*
+    sample-limit [ csv-plotter ] with-variable >>gadgets ;
 
 :: begin-chart-zoom ( lchart -- )
+  lchart latest-zoom-start>> [ center>> f swap set-model ] when*
+  lchart latest-zoom-start>> lchart latest-zoom-end>> [ lchart lines>> values first remove-gadget ] bi@
+
   lchart axes-limits>> value>> first first2 :> ( xmin xmax )
   lchart hand-rel first lchart dim>> first /
   xmax xmin -
   *
+  live-cursor-horizontal-axis new [ swap 0 2array <model> >>center details-color <solid> >>color ] [ lchart lines>> values first swap add-gadget drop ] bi
   lchart latest-zoom-start<<
   ;
 
@@ -395,20 +402,32 @@ MAIN-WINDOW: live-chart-window { { title "live-chart" } }
   ! over { 0 0 } grid-child [ lines<< ] [ update-all-axes ] [ relayout-1 ] tri
   ! "zoom" open-window
 
-  lchart axes-limits>> value>> first first :> xmin
+  lchart axes-limits>> value>> first first2 :> ( xmin xmax )
+
+  lchart latest-zoom-start>> center>> value>> first :> range-start
+  lchart latest-zoom-end>> center>> value>> first :> range-end
+  lchart lines>> values first data>> length :> x-element-count
+  range-start xmax xmin - /f x-element-count * floor >fixnum :> idx-start
+  range-end xmax xmin - /f x-element-count * ceiling >fixnum :> idx-end
 
   lchart lines>> dup keys
-  swap '[ _ at [ lchart latest-zoom-start>> floor lchart latest-zoom-end>> ceiling 2dup > [ swap ] when ] dip data>> <slice> ] map flip
+  swap '[ _ at [ idx-start idx-end 2dup > [ swap ] when ] dip data>> <slice> ] map flip
   lchart xs>>
   lchart ys>>
-  lchart headers>> xmin lchart latest-zoom-start>> + floor sample-sequence [ zoom-plotter ] with-variable [ "zoom" open-window ] [ { 0 0 } grid-child update-all-axes ] [ relayout-1 ] tri
-  ;
+  lchart headers>> xmin range-start + sample-sequence [ zoom-plotter [ "zoom" open-window ] [ { 0 0 } grid-child update-all-axes ] [ relayout-1 ] tri ] with-variable  ;
 
 :: highlight-chart-zoom ( lchart -- )
-  lchart latest-zoom-start>>
+  lchart latest-zoom-start>> center>> value>> first
   lchart axes-limits>> value>> first first2 :> ( xmin xmax )
-  drag-loc first lchart dim>> first / xmax xmin - *
+  drag-loc first lchart dim>> first /f xmax xmin - *
   +
+  lchart latest-zoom-end>>
+  [
+    [ swap 0 2array swap center>> set-model ] keep dup relayout-1
+  ]
+  [
+    live-cursor-horizontal-axis new [ swap 0 2array <model> >>center details-color <solid> >>color ] [ lchart lines>> values first swap add-gadget drop ] bi
+  ] if*
   lchart latest-zoom-end<<
   ;
 
