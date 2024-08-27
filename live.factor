@@ -346,7 +346,7 @@ M: live-chart ungraft* t >>paused drop ;
     <channel> headers <flag> [ <live-chart> ] keep :> ( ch g f )
     x-column g { 0 0 } grid-child xs<<
     y-columns g { 0 0 } grid-child ys<<
-    x-column y-columns lines (line-feeder) ch f start-data-read-thread ! controller
+    x-column y-columns dup [ drop lines first length <iota> ] unless lines (line-feeder) ch f start-data-read-thread ! controller
     ch g frame-livecharts first '[ x-column y-columns _ plot-columns ] sample-sequence get [ 0 ] unless* sample-sequence [ start-data-update-thread ] with-variable ! model
     f g frame-livecharts first start-data-display-thread ! view
     g
@@ -392,7 +392,7 @@ MAIN-WINDOW: live-chart-window { { title "live-chart" } }
   lchart hand-rel first lchart dim>> first /
   xmax xmin -
   *
-  live-cursor-horizontal-axis new [ swap 0 2array <model> >>center details-color <solid> >>color ] [ lchart lines>> values first swap add-gadget drop ] bi
+  live-cursor-horizontal-axis new [ swap xmin + 0 2array <model> >>center details-color <solid> >>color ] [ lchart lines>> values first swap add-gadget drop ] bi
   lchart latest-zoom-start<<
   ;
 
@@ -403,18 +403,19 @@ MAIN-WINDOW: live-chart-window { { title "live-chart" } }
   ! "zoom" open-window
 
   lchart axes-limits>> value>> first first2 :> ( xmin xmax )
-
+  
   lchart latest-zoom-start>> center>> value>> first :> range-start
   lchart latest-zoom-end>> center>> value>> first :> range-end
   lchart lines>> values first data>> length :> x-element-count
-  range-start xmax xmin - /f x-element-count * floor >fixnum :> idx-start
-  range-end xmax xmin - /f x-element-count * ceiling >fixnum :> idx-end
+  range-start xmin - xmax xmin - /f x-element-count * floor >fixnum :> idx-start
+  range-end xmin - xmax xmin - /f x-element-count * ceiling >fixnum :> idx-end
 
   lchart lines>> dup keys
   swap '[ _ at [ idx-start idx-end 2dup > [ swap ] when ] dip data>> <slice> ] map flip
   lchart xs>>
   lchart ys>>
-  lchart headers>> xmin range-start + sample-sequence [ zoom-plotter [ "zoom" open-window ] [ { 0 0 } grid-child update-all-axes ] [ relayout-1 ] tri ] with-variable  ;
+  lchart headers>> range-start sample-sequence [ zoom-plotter [ "zoom" open-window ] [ { 0 0 } grid-child update-all-axes ] [ relayout-1 ] tri ] with-variable
+  ;
 
 :: highlight-chart-zoom ( lchart -- )
   lchart latest-zoom-start>> center>> value>> first
