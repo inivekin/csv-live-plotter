@@ -247,6 +247,16 @@ M: live-chart ungraft* t >>paused drop ;
         [ first gadget update-live-line ] bi 
     ] curry each ;
 
+:: plot-columns-immediate ( rows x-col y-cols gadget -- )
+    rows <enumerated> :> enumrows
+    x-col [ 1 enumrows col col ] [ 0 enumrows col ] if* :> xs
+
+    y-cols [ [ 1 enumrows col col xs swap zip [ first2 and ] filter ]
+             [ gadget get-or-create-line data<< ] bi ] each ;
+
+M: live-chart model-changed [ value>> ] dip [ xs>> ] [ ys>> ] [ ] tri [ plot-columns-immediate ] [ update-all-axes ] bi ;
+
+
 :: multiply-axis ( limits scaling -- scaled-limits )
     limits first2 swap -
     scaling first *
@@ -273,6 +283,50 @@ M: live-chart ungraft* t >>paused drop ;
     { 0 0 } grid-add
 
     <pile> "pause" [ lchart com-pause flag raise-flag ] <roll-button> white-interior add-gadget { 1 1 } grid-add
+
+    lchart axes-labels>> [ first2 [ first2 ] bi@ "g_xmin: %.3f g_xmax: %.3f g_ymin: %.3f g_ymax: %.3f" sprintf ] <arrow> <label-control> { 0 1 } grid-add
+
+    live-series-info new vertical >>orientation
+    white-interior
+
+    [ lchart series-metadata<< ]
+    [ <scroller> { 1 0 } grid-add ]
+    bi
+    ;
+
+:: <manual-model-chart> ( headers -- window-gadget )
+    2 2 <frame> white-interior
+    live-chart new <default-min-axes> >>axes H{ } clone >>lines { { 1.0 0 } { 1.0 0 } } >>axes-scaling :> lchart
+    lchart headers >>headers
+    <default-min-axes> <model> >>axes-labels 
+    <default-min-axes> <model> [ >>axes-limits ] [ over [ set-chart-axes 2drop ] curry live-axis-observer boa swap add-connection ] bi
+    vertical-axis new text-color >>color add-gadget
+    horizontal-axis new text-color >>color add-gadget
+    white-interior
+    { 0 0 } grid-add
+
+    lchart axes-labels>> [ first2 [ first2 ] bi@ "g_xmin: %.3f g_xmax: %.3f g_ymin: %.3f g_ymax: %.3f" sprintf ] <arrow> <label-control> { 0 1 } grid-add
+
+    live-series-info new vertical >>orientation
+    white-interior
+
+    [ lchart series-metadata<< ]
+    [ <scroller> { 1 0 } grid-add ]
+    bi
+    ;
+
+:: <model-chart> ( model x ys headers -- window-gadget )
+    2 2 <frame> white-interior
+    live-chart new <default-min-axes> >>axes H{ } clone >>lines { { 1.0 0 } { 1.0 0 } } >>axes-scaling :> lchart
+    lchart headers >>headers
+    model >>model
+    x >>xs ys >>ys
+    <default-min-axes> <model> >>axes-labels 
+    <default-min-axes> <model> [ >>axes-limits ] [ over [ set-chart-axes 2drop ] curry live-axis-observer boa swap add-connection ] bi
+    vertical-axis new text-color >>color add-gadget
+    horizontal-axis new text-color >>color add-gadget
+    white-interior
+    { 0 0 } grid-add
 
     lchart axes-labels>> [ first2 [ first2 ] bi@ "g_xmin: %.3f g_xmax: %.3f g_ymin: %.3f g_ymax: %.3f" sprintf ] <arrow> <label-control> { 0 1 } grid-add
 
@@ -341,7 +395,12 @@ M: live-chart ungraft* t >>paused drop ;
 : frame-livecharts ( gadget -- seq )
     children>> [ live-chart? ] filter ;
 
-! dense matrix opposed to seq-plotter sparse matrix
+! USE: ui.gadgets.charts.live { { 1 1 1 1 } { 2 1 2 1 } { 3 1 3 2 } { 4 2 3 6 } } <model> 0 { 1 2 3 } { "t" "a" "b" "c" } model-plotter
+: model-plotter ( rows-madel x-column y-columns headers -- gadget )
+  ! <manual-model-chart> '[ _ _ _ [ frame-livecharts first [ plot-columns-immediate ] [ update-all-axes ] bi ] keep gadget. ] <pane-control> <scroller> ;
+  <model-chart> ; ! '[ _ _ _ [ frame-livecharts first [ plot-columns-immediate ] [ update-all-axes ] bi ] keep gadget. ] <pane-control> <scroller> ;
+  ! [ value>> ] 3dip <manual-model-chart> [ frame-livecharts first [ plot-columns-immediate ] [ update-all-axes ] [ relayout ] tri ] keep ;
+
 :: zoom-plotter ( lines x-column y-columns headers -- gadget )
     <channel> headers <flag> [ <live-chart> ] keep :> ( ch g f )
     x-column g { 0 0 } grid-child xs<<
@@ -361,6 +420,9 @@ M: live-chart ungraft* t >>paused drop ;
     f g frame-livecharts first start-data-display-thread ! view
     g
     ;
+
+: default-seq-plotter ( rows -- gadget )
+    dup length <iota> f swap dup [ number>string ] map seq-plotter ;
 
 :: csv-plotter ( stream x-column y-columns -- gadget )
     stream [ io:readln "," split ] with-input-stream* :> headers
@@ -410,11 +472,12 @@ MAIN-WINDOW: live-chart-window { { title "live-chart" } }
   range-start xmin - xmax xmin - /f x-element-count * floor >fixnum :> idx-start
   range-end xmin - xmax xmin - /f x-element-count * ceiling >fixnum :> idx-end
 
-  lchart lines>> dup keys
-  swap '[ _ at [ idx-start idx-end 2dup > [ swap ] when ] dip data>> <slice> ] map flip
+  lchart control-value idx-start idx-end rot <slice> <model> ! lines>> dup keys
+  ! swap '[ _ at [ idx-start idx-end 2dup > [ swap ] when ] dip data>> <slice> ] map flip
   lchart xs>>
   lchart ys>>
-  lchart headers>> range-start sample-sequence [ zoom-plotter [ "zoom" open-window ] [ { 0 0 } grid-child update-all-axes ] [ relayout-1 ] tri ] with-variable
+  ! lchart headers>> range-start sample-sequence [ zoom-plotter [ "zoom" open-window ] [ { 0 0 } grid-child update-all-axes ] [ relayout-1 ] tri ] with-variable
+  lchart headers>> range-start sample-sequence [ model-plotter "zoom" open-window ] with-variable
   ;
 
 :: highlight-chart-zoom ( lchart -- )
@@ -433,7 +496,7 @@ MAIN-WINDOW: live-chart-window { { title "live-chart" } }
   ;
 
 live-chart H{
-    { T{ button-down } [ begin-chart-zoom ] }
-    { T{ button-up } [ finish-chart-zoom ] }
-    { T{ drag } [ highlight-chart-zoom ] }
+    { T{ button-down { # 1 } } [ begin-chart-zoom ] }
+    { T{ button-up { # 1 } } [ finish-chart-zoom ] }
+    { T{ drag { # 1 } } [ highlight-chart-zoom ] }
 } set-gestures
